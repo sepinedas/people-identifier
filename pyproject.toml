@@ -1,14 +1,15 @@
 [project]
 name = "face-id-cli"
 version = "0.2.0"
-description = "Offline CLI to enroll and recognize people's faces using deep learning (face_recognition library)."
+description = "Offline CLI to enroll and recognize people's faces using deep learning (deepface library)."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "face_recognition>=1.3.5",
+    "deepface>=0.0.75",
     "opencv-python>=4.8.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
+    "tensorflow>=2.13.0",
 ]
 
 [project.scripts]

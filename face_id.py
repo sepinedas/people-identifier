@@ -2,10 +2,9 @@
 """
 face_id.py - A simple CLI for enrolling and recognizing people's faces.
 
-Uses the face_recognition library (built on dlib's deep learning models)
-for face detection and encoding, providing higher accuracy than classical
-methods like Haar cascades. Everything runs locally/offline - no cloud
-APIs, no internet connection required.
+Uses the deepface library (state-of-the-art deep learning models)
+for face detection and encoding, providing superior accuracy and flexibility.
+Everything runs locally/offline - no cloud APIs, no internet connection required.
 
 Commands:
     enroll     Add face images of a person to the dataset
@@ -30,9 +29,9 @@ import sys
 from datetime import datetime
 
 import cv2
-import face_recognition
 import numpy as np
 from PIL import Image
+from deepface import DeepFace
 
 # ---------------------------------------------------------------------------
 # Paths / storage layout
@@ -52,8 +51,8 @@ LABELS_PATH = os.path.join(DATA_DIR, "labels.json")
 # Default 0.6 is good for typical use; try 0.5 for stricter, 0.65 for more lenient.
 DEFAULT_THRESHOLD = 0.6
 
-# Model complexity for encoding: "small" (fast, less accurate) or "large" (slower, more accurate)
-ENCODING_MODEL = "large"
+# DeepFace model for embedding: "VGGFace", "VGGFace2", "OpenFace", "DeepFace", "ArcFace", "Facenet", etc.
+ENCODING_MODEL = "VGGFace2"
 
 
 def _ensure_dirs():
@@ -62,30 +61,47 @@ def _ensure_dirs():
 
 def _detect_faces(image):
     """
-    Detect face locations in an image using face_recognition library.
-    Returns list of (top, right, bottom, left) tuples.
+    Detect face locations in an image using deepface.
+    Returns list of (top, right, bottom, left) tuples in OpenCV format.
     """
-    return face_recognition.face_locations(image, model="hog")
+    try:
+        detections = DeepFace.extract_faces(img_path=image, detector_backend="opencv")
+        faces = []
+        for detection in detections:
+            x, y, w, h = detection["facial_area"]["x"], detection["facial_area"]["y"], \
+                          detection["facial_area"]["w"], detection["facial_area"]["h"]
+            # Convert to (top, right, bottom, left) format
+            faces.append((y, x + w, y + h, x))
+        return faces
+    except Exception as e:
+        # print(f"  warning: face detection error: {e}")
+        return []
 
 
-def _encode_face(image):
+def _encode_face(image_path):
     """
-    Generate a 128-dimensional encoding for a face.
+    Generate an embedding for a face using DeepFace.
     Returns array or None if no face detected.
     """
     try:
-        encodings = face_recognition.face_encodings(image, model=ENCODING_MODEL)
-        return encodings[0] if encodings else None
+        embedding_objs = DeepFace.represent(img_path=image_path, model_name=ENCODING_MODEL, 
+                                             detector_backend="opencv")
+        if embedding_objs and len(embedding_objs) > 0:
+            return np.array(embedding_objs[0]["embedding"])
+        return None
     except Exception as e:
-        print(f"  warning: encoding error: {e}")
+        # print(f"  warning: encoding error: {e}")
         return None
 
 
 def _load_image(path):
     """Load an image file and return as RGB array."""
     try:
-        img = face_recognition.load_image_file(path)
-        return img
+        img = cv2.imread(path)
+        if img is None:
+            return None
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return rgb
     except Exception as e:
         print(f"  warning: failed to load {path}: {e}")
         return None
@@ -159,7 +175,7 @@ def cmd_enroll(args):
                 if not ok:
                     print("warning: failed to read frame from webcam")
                     break
-                # Convert BGR to RGB for face_recognition
+                # Convert BGR to RGB for processing
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 face_locs = _detect_faces(rgb)
                 
@@ -250,11 +266,8 @@ def cmd_train(args):
 
         encodings_dict[person] = []
         for fname in samples:
-            image = _load_image(os.path.join(person_dir, fname))
-            if image is None:
-                continue
-            
-            encoding = _encode_face(image)
+            image_path = os.path.join(person_dir, fname)
+            encoding = _encode_face(image_path)
             if encoding is not None:
                 encodings_dict[person].append(encoding)
                 total_samples += 1
@@ -281,19 +294,32 @@ def cmd_train(args):
 
 def _recognize_faces(image_rgb, encodings_dict, threshold):
     """
-    Detect and recognize faces in an image.
+    Detect and recognize faces in an image using deepface embeddings.
     Returns list of (name, confidence, (top, right, bottom, left)) tuples.
     """
     face_locs = _detect_faces(image_rgb)
-    face_encodings = face_recognition.face_encodings(image_rgb)
+    
+    # Generate embeddings for detected faces
+    try:
+        embedding_objs = DeepFace.represent(img_path=image_rgb, model_name=ENCODING_MODEL,
+                                            detector_backend="opencv")
+    except Exception:
+        return []
     
     results = []
-    for face_encoding, face_loc in zip(face_encodings, face_locs):
+    for i, emb_obj in enumerate(embedding_objs):
+        if i >= len(face_locs):
+            break
+            
+        face_embedding = np.array(emb_obj["embedding"])
+        face_loc = face_locs[i]
+        
         best_match_name = "Unknown"
         best_distance = float('inf')
 
         for person_name, person_encodings in encodings_dict.items():
-            distances = face_recognition.face_distance(person_encodings, face_encoding)
+            # Calculate distances to all encodings of this person
+            distances = [np.linalg.norm(face_embedding - enc) for enc in person_encodings]
             min_distance = np.min(distances)
 
             if min_distance < best_distance:

@@ -4,12 +4,11 @@ A command-line tool to enroll people's faces and later recognize them in
 photos or a live webcam feed. Runs entirely on your machine — no cloud
 service, no API keys, no internet connection needed at runtime.
 
-Under the hood it uses the `face_recognition` library (built on dlib's
-deep learning models) for high-accuracy face **detection** and **encoding**.
-This provides significantly better accuracy than classical methods (Haar
-cascades + LBPH), works well for both small personal datasets and larger
-recognition tasks, and needs only `face_recognition`, `opencv-python`,
-and their dependencies.
+Under the hood it uses the `deepface` library, which provides access to
+state-of-the-art deep learning models (VGGFace2, ArcFace, Facenet, etc.) for
+high-accuracy face **detection** and **embedding generation**. This provides
+superior accuracy compared to classical methods and offers flexibility to
+choose different underlying models for different use cases.
 
 ## Install
 
@@ -24,10 +23,9 @@ uv sync
 That creates a local `.venv` with the right dependencies. You don't need to
 activate it — just prefix commands with `uv run` as shown below.
 
-Note: The dependencies include `face_recognition`, which requires `dlib` to
-be compiled. On most systems this happens automatically, but on some
-platforms (especially Windows) you may need a C++ compiler installed. See
-[face_recognition's installation docs](https://github.com/ageitgey/face_recognition#installation)
+Note: The dependencies include `deepface` and `tensorflow`, which may require
+additional system packages on some platforms. See
+[deepface's installation docs](https://github.com/serengp/deepface#installation)
 if you run into issues.
 
 ## Usage
@@ -102,14 +100,14 @@ face-id list
 
 ## How it works
 
-- **Detection**: `face_recognition.face_locations()` uses a CNN (Convolutional
-  Neural Network) to find face bounding boxes in each frame/image with high
-  accuracy.
+- **Detection**: `DeepFace.extract_faces()` uses advanced detector backends
+  (OpenCV, MTCNN, SSD, etc.) to find face bounding boxes in each frame/image
+  with high accuracy.
 - **Storage**: Each enrolled face sample is stored under `data/dataset/<name>/`
   as a JPEG image.
-- **Encoding**: `face_recognition.face_encodings()` generates 128-dimensional
-  embeddings using dlib's ResNet model. These are more robust to variations
-  in angle, lighting, and expression than classical methods.
+- **Encoding**: `DeepFace.represent()` generates high-dimensional embeddings
+  using state-of-the-art models like VGGFace2, ArcFace, or Facenet. These are
+  more robust to variations in angle, lighting, and expression than classical methods.
 - **Training**: All embeddings are computed and stored in `data/encodings.json`
   plus `data/labels.json` (metadata).
 - **Recognition**: Each detected face is encoded and compared against all
@@ -118,12 +116,13 @@ face-id list
 
 ## Accuracy & performance
 
-- **Much better accuracy** than Haar cascades + LBPH, especially for:
+- **State-of-the-art accuracy** from modern deep learning models, especially for:
   - Faces at different angles or in variable lighting
-  - Recognizing people you've enrolled with few samples (5–10 vs. 20+)
-  - Handling false positives
-- **Slower than classical methods** (~0.5–1 second per face with CPU; GPU
-  inference would be faster), but still practical for offline use.
+  - Recognizing people you've enrolled with few samples (5–10)
+  - Handling complex scenarios with multiple faces
+- **Trade-off**: Slower inference than classical methods (~1–3 seconds per image
+  with CPU), but much better accuracy. GPU acceleration is supported if TensorFlow
+  is configured with CUDA.
 - Works well for small to medium groups (a few to a few hundred people).
 - All data stays local in `./data/`. Delete that folder to wipe everything.
 
@@ -131,10 +130,14 @@ face-id list
 
 - Accuracy is highest with clear, front-facing, well-lit faces.
 - For very large populations (1000s of people) or real-time processing on
-  many concurrent streams, consider a more optimized setup (e.g., ONNX
-  models, GPU acceleration, or a hybrid approach).
+  many concurrent streams, consider optimizations like model quantization,
+  ONNX export, or GPU acceleration.
 - Be mindful of consent and privacy when enrolling and recognizing people.
 - Tune `--threshold` to your use case:
   - `0.5` or lower: very strict, few false positives, may miss some true matches
   - `0.6` (default): balanced
   - `0.7` or higher: more lenient, more false positives
+- You can change the embedding model by editing the `ENCODING_MODEL` variable
+  in `face_id.py` (options: "VGGFace", "VGGFace2", "OpenFace", "DeepFace",
+  "ArcFace", "Facenet", etc.). Different models have different strengths and
+  trade-offs.
