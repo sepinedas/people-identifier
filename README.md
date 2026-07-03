@@ -1,14 +1,16 @@
+````markdown
 # face_id.py — offline face recognition CLI
 
 A command-line tool to enroll people's faces and later recognize them in
 photos or a live webcam feed. Runs entirely on your machine — no cloud
 service, no API keys, no internet connection needed at runtime.
 
-Under the hood it uses OpenCV's Haar cascade for face **detection** and the
-LBPH (Local Binary Patterns Histograms) algorithm for face **recognition**.
-This is lighter-weight than deep-learning face recognizers, works well for
-small personal datasets (a handful of people, a household, a small team),
-and needs nothing beyond `opencv-contrib-python`.
+Under the hood it uses the `face_recognition` library (built on dlib's
+deep learning models) for high-accuracy face **detection** and **encoding**.
+This provides significantly better accuracy than classical methods (Haar
+cascades + LBPH), works well for both small personal datasets and larger
+recognition tasks, and needs only `face_recognition`, `opencv-python`,
+and their dependencies.
 
 ## Install
 
@@ -23,9 +25,11 @@ uv sync
 That creates a local `.venv` with the right dependencies. You don't need to
 activate it — just prefix commands with `uv run` as shown below.
 
-Note: the dependency is `opencv-contrib-python` specifically (not just
-`opencv-python`) — the `cv2.face` module lives in the contrib package.
-This is already set correctly in `pyproject.toml`.
+Note: The dependencies include `face_recognition`, which requires `dlib` to
+be compiled. On most systems this happens automatically, but on some
+platforms (especially Windows) you may need a C++ compiler installed. See
+[face_recognition's installation docs](https://github.com/ageitgey/face_recognition#installation)
+if you run into issues.
 
 ## Usage
 
@@ -47,8 +51,9 @@ glob pattern or multiple files):
 uv run face_id.py enroll "Alan Turing" --images photos/alan_*.jpg
 ```
 
-Repeat for each person. Enroll 10–30 samples per person for good accuracy —
-more angles/lighting = better recognition later.
+Repeat for each person. Enroll 5–10 samples per person for good accuracy —
+more diverse angles/lighting = better recognition later. (Deep learning
+models need fewer samples than classical methods.)
 
 ### 2. Train the model
 
@@ -56,7 +61,9 @@ more angles/lighting = better recognition later.
 uv run face_id.py train
 ```
 
-Re-run this any time you enroll or remove someone.
+This encodes all enrolled face samples into a compact representation and
+saves them to `data/encodings.json`. Re-run this any time you enroll or
+remove someone.
 
 ### 3. Recognize faces
 
@@ -73,7 +80,8 @@ uv run face_id.py recognize --webcam
 ```
 
 Each detected face gets a box and a name (or "Unknown" if no confident
-match). Tune strictness with `--threshold` (lower = stricter; default 70).
+match). Tune strictness with `--threshold` (default 0.6; lower = stricter,
+range 0.0–1.0).
 
 ### Manage enrolled people
 
@@ -95,24 +103,40 @@ face-id list
 
 ## How it works
 
-- **Detection**: OpenCV's Haar cascade (`haarcascade_frontalface_default.xml`,
-  bundled with OpenCV) finds face bounding boxes in each frame/image.
-- **Storage**: each enrolled face sample is cropped, converted to grayscale,
-  resized to 200×200, and saved under `data/dataset/<name>/`.
-- **Training**: `cv2.face.LBPHFaceRecognizer` is trained on all saved samples,
-  producing `data/model.yml` plus `data/labels.json` (numeric label → name).
-- **Recognition**: each detected face is compared against the trained model.
-  LBPH returns a *distance* (lower = more similar); anything above
-  `--threshold` is reported as "Unknown" rather than a wrong guess.
+- **Detection**: `face_recognition.face_locations()` uses a CNN (Convolutional
+  Neural Network) to find face bounding boxes in each frame/image with high
+  accuracy.
+- **Storage**: Each enrolled face sample is stored under `data/dataset/<name>/`
+  as a JPEG image.
+- **Encoding**: `face_recognition.face_encodings()` generates 128-dimensional
+  embeddings using dlib's ResNet model. These are more robust to variations
+  in angle, lighting, and expression than classical methods.
+- **Training**: All embeddings are computed and stored in `data/encodings.json`
+  plus `data/labels.json` (metadata).
+- **Recognition**: Each detected face is encoded and compared against all
+  stored encodings using Euclidean distance. Lower distance = more similar;
+  anything above `--threshold` is reported as "Unknown".
+
+## Accuracy & performance
+
+- **Much better accuracy** than Haar cascades + LBPH, especially for:
+  - Faces at different angles or in variable lighting
+  - Recognizing people you've enrolled with few samples (5–10 vs. 20+)
+  - Handling false positives
+- **Slower than classical methods** (~0.5–1 second per face with CPU; GPU
+  inference would be faster), but still practical for offline use.
+- Works well for small to medium groups (a few to a few hundred people).
+- All data stays local in `./data/`. Delete that folder to wipe everything.
 
 ## Limitations & tips
 
-- Works best with clear, front-facing, well-lit faces — same as most
-  classical (non-deep-learning) face recognition.
-- Accuracy is good for small groups (a few to a few dozen people) but won't
-  match commercial-grade systems on large populations or hard angles/lighting.
-  If you need higher accuracy, swap in a deep-learning encoder (e.g. the
-  `face_recognition` / dlib library, or an ONNX face-embedding model) — the
-  CLI's enroll/train/recognize structure would stay the same.
-- All data stays local in `./data/`. Delete that folder to wipe everything.
+- Accuracy is highest with clear, front-facing, well-lit faces.
+- For very large populations (1000s of people) or real-time processing on
+  many concurrent streams, consider a more optimized setup (e.g., ONNX
+  models, GPU acceleration, or a hybrid approach).
 - Be mindful of consent and privacy when enrolling and recognizing people.
+- Tune `--threshold` to your use case:
+  - `0.5` or lower: very strict, few false positives, may miss some true matches
+  - `0.6` (default): balanced
+  - `0.7` or higher: more lenient, more false positives
+````
