@@ -2,13 +2,14 @@
 """
 face_id.py - A simple CLI for enrolling and recognizing people's faces.
 
-Uses OpenCV's Haar cascade for face detection and its LBPH algorithm
-for recognition. Everything runs locally/offline - no cloud APIs, no
-internet connection required.
+Uses the face_recognition library (built on dlib's deep learning models)
+for face detection and encoding, providing higher accuracy than classical
+methods like Haar cascades. Everything runs locally/offline - no cloud
+APIs, no internet connection required.
 
 Commands:
     enroll     Add face images of a person to the dataset
-    train      Train (or retrain) the recognition model on enrolled faces
+    train      Train (or encode) the recognition model on enrolled faces
     recognize  Identify faces in an image or via webcam
     list       List everyone currently enrolled
     remove     Remove a person from the dataset
@@ -29,55 +30,65 @@ import sys
 from datetime import datetime
 
 import cv2
+import face_recognition
 import numpy as np
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Paths / storage layout
 #
 #   data/
-#     dataset/<person_name>/<uuid>.png   -- cropped grayscale face samples
-#     model.yml                          -- trained LBPH model
-#     labels.json                        -- {"0": "Ada Lovelace", "1": ...}
+#     dataset/<person_name>/<uuid>.jpg   -- original face samples
+#     encodings.json                     -- {"name": [[encoding_values], ...], ...}
+#     labels.json                        -- metadata (optional)
 # ---------------------------------------------------------------------------
 
 DATA_DIR = os.environ.get("FACE_ID_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 DATASET_DIR = os.path.join(DATA_DIR, "dataset")
-MODEL_PATH = os.path.join(DATA_DIR, "model.yml")
+ENCODINGS_PATH = os.path.join(DATA_DIR, "encodings.json")
 LABELS_PATH = os.path.join(DATA_DIR, "labels.json")
 
-FACE_SIZE = (200, 200)  # all stored face crops are normalized to this size
-CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+# Confidence threshold: LOWER = stricter matching. Range: 0.0 (strictest) to 1.0 (most permissive)
+# Default 0.6 is good for typical use; try 0.5 for stricter, 0.65 for more lenient.
+DEFAULT_THRESHOLD = 0.6
 
-# Confidence threshold for LBPH: LOWER distance = more confident match.
-# Anything above this is reported as "Unknown". Tune with --threshold.
-DEFAULT_THRESHOLD = 70.0
+# Model complexity for encoding: "small" (fast, less accurate) or "large" (slower, more accurate)
+ENCODING_MODEL = "large"
 
 
 def _ensure_dirs():
     os.makedirs(DATASET_DIR, exist_ok=True)
 
 
-def _get_detector():
-    if not os.path.exists(CASCADE_PATH):
-        sys.exit(f"error: Haar cascade file not found at {CASCADE_PATH}")
-    detector = cv2.CascadeClassifier(CASCADE_PATH)
-    if detector.empty():
-        sys.exit("error: failed to load face detector")
-    return detector
+def _detect_faces(image):
+    """
+    Detect face locations in an image using face_recognition library.
+    Returns list of (top, right, bottom, left) tuples.
+    """
+    return face_recognition.face_locations(image, model="hog")
 
 
-def _detect_faces(gray_img, detector):
-    """Return list of (x, y, w, h) boxes for detected faces."""
-    return detector.detectMultiScale(
-        gray_img, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)
-    )
-
-
-def _load_gray(path):
-    img = cv2.imread(path)
-    if img is None:
+def _encode_face(image):
+    """
+    Generate a 128-dimensional encoding for a face.
+    Returns array or None if no face detected.
+    """
+    try:
+        encodings = face_recognition.face_encodings(image, model=ENCODING_MODEL)
+        return encodings[0] if encodings else None
+    except Exception as e:
+        print(f"  warning: encoding error: {e}")
         return None
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+
+def _load_image(path):
+    """Load an image file and return as RGB array."""
+    try:
+        img = face_recognition.load_image_file(path)
+        return img
+    except Exception as e:
+        print(f"  warning: failed to load {path}: {e}")
+        return None
 
 
 def _safe_name_to_dir(name):
@@ -88,13 +99,37 @@ def _person_dir(name):
     return os.path.join(DATASET_DIR, _safe_name_to_dir(name))
 
 
+def _load_encodings():
+    """Load all stored encodings. Returns dict: {name: [list of encodings]}"""
+    if not os.path.exists(ENCODINGS_PATH):
+        return {}
+    try:
+        with open(ENCODINGS_PATH) as f:
+            data = json.load(f)
+            # Convert lists back to numpy arrays
+            return {name: [np.array(enc) for enc in encs] for name, encs in data.items()}
+    except Exception as e:
+        print(f"warning: failed to load encodings: {e}")
+        return {}
+
+
+def _save_encodings(encodings_dict):
+    """Save encodings to disk. Converts numpy arrays to lists for JSON."""
+    try:
+        serializable = {name: [enc.tolist() for enc in encs] for name, encs in encodings_dict.items()}
+        with open(ENCODINGS_PATH, "w") as f:
+            json.dump(serializable, f, indent=2)
+    except Exception as e:
+        print(f"error: failed to save encodings: {e}")
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # enroll
 # ---------------------------------------------------------------------------
 
 def cmd_enroll(args):
     _ensure_dirs()
-    detector = _get_detector()
     name = args.name.strip()
     if not name:
         sys.exit("error: name cannot be empty")
@@ -104,14 +139,12 @@ def cmd_enroll(args):
 
     saved = 0
 
-    def save_face(gray_frame, box):
+    def save_face(image_array, filename):
         nonlocal saved
-        x, y, w, h = box
-        face = gray_frame[y:y + h, x:x + w]
-        face = cv2.resize(face, FACE_SIZE)
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        out_path = os.path.join(out_dir, f"{ts}.png")
-        cv2.imwrite(out_path, face)
+        # Convert RGB back to BGR for cv2.imwrite
+        bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+        out_path = os.path.join(out_dir, filename)
+        cv2.imwrite(out_path, bgr)
         saved += 1
 
     if args.webcam:
@@ -126,21 +159,29 @@ def cmd_enroll(args):
                 if not ok:
                     print("warning: failed to read frame from webcam")
                     break
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                boxes = _detect_faces(gray, detector)
+                # Convert BGR to RGB for face_recognition
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                face_locs = _detect_faces(rgb)
+                
                 display = frame.copy()
-                for (x, y, w, h) in boxes:
-                    cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                for (top, right, bottom, left) in face_locs:
+                    cv2.rectangle(display, (left, top), (right, bottom), (0, 255, 0), 2)
+                
                 cv2.putText(display, f"{name}: {saved}/{args.count} (SPACE=capture, q=quit)",
                             (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 cv2.imshow("face_id enroll", display)
+                
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
-                if key == ord(" ") and len(boxes) > 0:
-                    # use the largest detected face
-                    box = max(boxes, key=lambda b: b[2] * b[3])
-                    save_face(gray, box)
+                if key == ord(" ") and len(face_locs) > 0:
+                    # Use the largest detected face
+                    face_locs_with_area = [(loc, (loc[2]-loc[0]) * (loc[1]-loc[3])) for loc in face_locs]
+                    largest_loc = max(face_locs_with_area, key=lambda x: x[1])[0]
+                    top, right, bottom, left = largest_loc
+                    face_image = rgb[top:bottom, left:right]
+                    ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                    save_face(face_image, f"{ts}.jpg")
                     print(f"  captured {saved}/{args.count}")
         finally:
             cap.release()
@@ -153,17 +194,25 @@ def cmd_enroll(args):
             paths.extend(matched if matched else [pattern])
         if not paths:
             sys.exit("error: no image files matched --images pattern(s)")
+        
         for path in paths:
-            gray = _load_gray(path)
-            if gray is None:
+            image = _load_image(path)
+            if image is None:
                 print(f"  skip (unreadable): {path}")
                 continue
-            boxes = _detect_faces(gray, detector)
-            if len(boxes) == 0:
+            face_locs = _detect_faces(image)
+            if len(face_locs) == 0:
                 print(f"  skip (no face found): {path}")
                 continue
-            box = max(boxes, key=lambda b: b[2] * b[3])
-            save_face(gray, box)
+            
+            # Use largest face
+            face_locs_with_area = [(loc, (loc[2]-loc[0]) * (loc[1]-loc[3])) for loc in face_locs]
+            largest_loc = max(face_locs_with_area, key=lambda x: x[1])[0]
+            top, right, bottom, left = largest_loc
+            face_image = image[top:bottom, left:right]
+            
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            save_face(face_image, f"{ts}.jpg")
             print(f"  captured from {path}")
     else:
         sys.exit("error: specify either --webcam or --images <files...>")
@@ -189,74 +238,90 @@ def cmd_train(args):
     if not people:
         sys.exit("error: no enrolled people found. Run 'enroll' first.")
 
-    faces = []
-    labels = []
-    label_map = {}
+    encodings_dict = {}
+    total_samples = 0
 
-    for idx, person in enumerate(people):
-        label_map[str(idx)] = person
+    for person in people:
         person_dir = os.path.join(DATASET_DIR, person)
-        samples = [f for f in os.listdir(person_dir) if f.lower().endswith(".png")]
+        samples = [f for f in os.listdir(person_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
         if not samples:
             print(f"warning: '{person}' has no face samples, skipping")
             continue
+
+        encodings_dict[person] = []
         for fname in samples:
-            gray = _load_gray(os.path.join(person_dir, fname))
-            if gray is None:
+            image = _load_image(os.path.join(person_dir, fname))
+            if image is None:
                 continue
-            faces.append(gray)
-            labels.append(idx)
+            
+            encoding = _encode_face(image)
+            if encoding is not None:
+                encodings_dict[person].append(encoding)
+                total_samples += 1
+            else:
+                print(f"  warning: could not encode {person}/{fname}")
 
-    if not faces:
-        sys.exit("error: no valid face samples to train on")
+        if not encodings_dict[person]:
+            del encodings_dict[person]
+            print(f"warning: no valid encodings for '{person}'")
 
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(faces, np.array(labels))
-    recognizer.write(MODEL_PATH)
+    if not encodings_dict:
+        sys.exit("error: no valid face encodings to train on")
 
-    with open(LABELS_PATH, "w") as f:
-        json.dump(label_map, f, indent=2)
+    _save_encodings(encodings_dict)
 
-    print(f"Trained model on {len(faces)} samples across {len(people)} people.")
-    print(f"Model saved to {MODEL_PATH}")
+    num_people = len(encodings_dict)
+    print(f"\nTrained encodings for {total_samples} samples across {num_people} people.")
+    print(f"Encodings saved to {ENCODINGS_PATH}")
 
 
 # ---------------------------------------------------------------------------
 # recognize
 # ---------------------------------------------------------------------------
 
-def _load_model():
-    if not (os.path.exists(MODEL_PATH) and os.path.exists(LABELS_PATH)):
-        sys.exit("error: no trained model found. Run 'train' first.")
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.read(MODEL_PATH)
-    with open(LABELS_PATH) as f:
-        label_map = json.load(f)
-    return recognizer, label_map
-
-
-def _annotate_and_report(frame, gray, detector, recognizer, label_map, threshold):
-    boxes = _detect_faces(gray, detector)
+def _recognize_faces(image_rgb, encodings_dict, threshold):
+    """
+    Detect and recognize faces in an image.
+    Returns list of (name, confidence, (top, right, bottom, left)) tuples.
+    """
+    face_locs = _detect_faces(image_rgb)
+    face_encodings = face_recognition.face_encodings(image_rgb)
+    
     results = []
-    for (x, y, w, h) in boxes:
-        face = cv2.resize(gray[y:y + h, x:x + w], FACE_SIZE)
-        label_id, distance = recognizer.predict(face)
-        if distance <= threshold:
-            name = label_map.get(str(label_id), "Unknown")
-        else:
-            name = "Unknown"
-        results.append((name, distance, (x, y, w, h)))
-        color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-        caption = f"{name} ({distance:.0f})"
-        cv2.putText(frame, caption, (x, max(20, y - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    for face_encoding, face_loc in zip(face_encodings, face_locs):
+        best_match_name = "Unknown"
+        best_distance = float('inf')
+
+        for person_name, person_encodings in encodings_dict.items():
+            distances = face_recognition.face_distance(person_encodings, face_encoding)
+            min_distance = np.min(distances)
+
+            if min_distance < best_distance:
+                best_distance = min_distance
+                best_match_name = person_name if min_distance <= threshold else "Unknown"
+
+        confidence = 1.0 - best_distance if best_distance != float('inf') else 0.0
+        results.append((best_match_name, confidence, face_loc))
+
     return results
 
 
+def _annotate_frame(frame, results):
+    """Draw boxes and labels on frame."""
+    for name, confidence, (top, right, bottom, left) in results:
+        color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+        
+        label = f"{name} ({confidence:.2f})" if name != "Unknown" else "Unknown"
+        cv2.putText(frame, label, (left, max(20, top - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+
 def cmd_recognize(args):
-    detector = _get_detector()
-    recognizer, label_map = _load_model()
+    encodings_dict = _load_encodings()
+    if not encodings_dict:
+        sys.exit("error: no trained encodings found. Run 'train' first.")
+
     threshold = args.threshold
 
     if args.webcam:
@@ -270,8 +335,11 @@ def cmd_recognize(args):
                 if not ok:
                     print("warning: failed to read frame from webcam")
                     break
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                _annotate_and_report(frame, gray, detector, recognizer, label_map, threshold)
+                
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = _recognize_faces(rgb, encodings_dict, threshold)
+                _annotate_frame(frame, results)
+                
                 cv2.imshow("face_id recognize", frame)
                 if (cv2.waitKey(1) & 0xFF) == ord("q"):
                     break
@@ -283,13 +351,17 @@ def cmd_recognize(args):
         frame = cv2.imread(args.image)
         if frame is None:
             sys.exit(f"error: could not read image '{args.image}'")
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        results = _annotate_and_report(frame, gray, detector, recognizer, label_map, threshold)
+        
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = _recognize_faces(rgb, encodings_dict, threshold)
+        _annotate_frame(frame, results)
 
         if not results:
             print("No faces detected.")
-        for name, distance, box in results:
-            print(f"  {name}  (confidence distance={distance:.1f}, lower=better)  box={box}")
+        else:
+            for name, confidence, (top, right, bottom, left) in results:
+                box = (left, top, right, bottom)
+                print(f"  {name}  (confidence={confidence:.3f})  box={box}")
 
         if args.output:
             cv2.imwrite(args.output, frame)
@@ -311,16 +383,17 @@ def cmd_list(args):
     if not people:
         print("No one is enrolled yet.")
         return
+
     print("Enrolled people:")
     for person in people:
         count = len([
             f for f in os.listdir(os.path.join(DATASET_DIR, person))
-            if f.lower().endswith(".png")
+            if f.lower().endswith((".jpg", ".png", ".jpeg"))
         ])
         print(f"  - {person}  ({count} sample(s))")
 
-    trained = os.path.exists(MODEL_PATH)
-    print(f"\nModel trained: {'yes' if trained else 'no (run: python3 face_id.py train)'}")
+    trained = os.path.exists(ENCODINGS_PATH)
+    print(f"\nEncodings trained: {'yes' if trained else 'no (run: python3 face_id.py train)'}")
 
 
 def cmd_remove(args):
@@ -328,6 +401,7 @@ def cmd_remove(args):
     person_dir = _person_dir(name)
     if not os.path.isdir(person_dir):
         sys.exit(f"error: no enrolled person named '{name}'")
+    
     import shutil
     shutil.rmtree(person_dir)
     print(f"Removed '{name}'. Run 'train' again to update the model.")
@@ -340,7 +414,7 @@ def cmd_remove(args):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="face_id.py",
-        description="Enroll and recognize people's faces from images or a webcam (fully offline).",
+        description="Enroll and recognize people's faces from images or a webcam (fully offline, deep learning-based).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -352,7 +426,7 @@ def build_parser():
     p_enroll.add_argument("--images", nargs="+", help="Image file(s) or glob pattern(s) to enroll from")
     p_enroll.set_defaults(func=cmd_enroll)
 
-    p_train = sub.add_parser("train", help="Train the recognition model on enrolled faces")
+    p_train = sub.add_parser("train", help="Encode enrolled faces into the recognition model")
     p_train.set_defaults(func=cmd_train)
 
     p_rec = sub.add_parser("recognize", help="Recognize faces in an image or webcam feed")
@@ -361,7 +435,7 @@ def build_parser():
     p_rec.add_argument("--image", help="Path to an image file to analyze")
     p_rec.add_argument("--output", help="Path to save annotated output image (with --image)")
     p_rec.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
-                        help=f"Max LBPH distance to count as a match; lower=stricter (default: {DEFAULT_THRESHOLD})")
+                        help=f"Max distance to count as a match; lower=stricter, 0.0-1.0 (default: {DEFAULT_THRESHOLD})")
     p_rec.set_defaults(func=cmd_recognize)
 
     p_list = sub.add_parser("list", help="List enrolled people")
