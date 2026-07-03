@@ -1,4 +1,3 @@
-````markdown
 # face_id.py — offline face recognition CLI
 
 A command-line tool to enroll people's faces and later recognize them in
@@ -139,4 +138,3 @@ face-id list
   - `0.5` or lower: very strict, few false positives, may miss some true matches
   - `0.6` (default): balanced
   - `0.7` or higher: more lenient, more false positives
-````
