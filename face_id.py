@@ -52,7 +52,7 @@ LABELS_PATH = os.path.join(DATA_DIR, "labels.json")
 DEFAULT_THRESHOLD = 0.6
 
 # DeepFace model for embedding: "VGGFace", "VGGFace2", "OpenFace", "DeepFace", "ArcFace", "Facenet", etc.
-ENCODING_MODEL = "VGGFace2"
+ENCODING_MODEL = "OpenFace"
 
 
 def _ensure_dirs():
@@ -65,7 +65,7 @@ def _detect_faces(image):
     Returns list of (top, right, bottom, left) tuples in OpenCV format.
     """
     try:
-        detections = DeepFace.extract_faces(img_path=image, detector_backend="opencv")
+        detections = DeepFace.extract_faces(img_path=image, detector_backend="centerface")
         faces = []
         for detection in detections:
             x, y, w, h = detection["facial_area"]["x"], detection["facial_area"]["y"], \
@@ -74,7 +74,7 @@ def _detect_faces(image):
             faces.append((y, x + w, y + h, x))
         return faces
     except Exception as e:
-        # print(f"  warning: face detection error: {e}")
+        print(f"  warning: face detection error: {e}")
         return []
 
 
@@ -85,7 +85,7 @@ def _encode_face(image_path):
     """
     try:
         embedding_objs = DeepFace.represent(img_path=image_path, model_name=ENCODING_MODEL, 
-                                             detector_backend="opencv")
+                                             detector_backend="centerface")
         if embedding_objs and len(embedding_objs) > 0:
             return np.array(embedding_objs[0]["embedding"])
         return None
@@ -302,7 +302,7 @@ def _recognize_faces(image_rgb, encodings_dict, threshold):
     # Generate embeddings for detected faces
     try:
         embedding_objs = DeepFace.represent(img_path=image_rgb, model_name=ENCODING_MODEL,
-                                            detector_backend="opencv")
+                                            detector_backend="centerface")
     except Exception:
         return []
     

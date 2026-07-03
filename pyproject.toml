@@ -6,11 +6,15 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "deepface>=0.0.75",
-    "opencv-python>=4.8.0",
+    "opencv-python>=5.0.0.93",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
-    "tensorflow>=2.13.0,<2.16.0",
-    "tf-keras>=2.15.0",
+    "tensorflow>=2.20.0",
+    "tf-keras>=2.20.0",
+    "dlib>=20.0.1",
+    "mediapipe>=0.10.35",
+    "facenet-pytorch>=2.5.3",
+    "opencv-contrib-python>=5.0.0.93",
 ]
 
 [project.scripts]
