@@ -9,7 +9,8 @@ dependencies = [
     "opencv-python>=4.8.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
-    "tensorflow>=2.13.0",
+    "tensorflow>=2.13.0,<2.16.0",
+    "tf-keras>=2.15.0",
 ]
 
 [project.scripts]
